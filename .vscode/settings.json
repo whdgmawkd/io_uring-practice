@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "liburing.h": "c",
+        "io_uring.h": "c",
+        "error.h": "c"
+    }
+}

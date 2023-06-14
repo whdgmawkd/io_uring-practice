@@ -1,5 +1,5 @@
 /**
- * random read program using liburing with sqpoll enabled.
+ * random read program using liburing
  */
 
 #define _GNU_SOURCE
@@ -48,30 +48,33 @@ void check_cqe(struct io_uring *ring) {
     }
 }
 
-int sqpoll_read(struct io_uring *ring) {
-    struct buf_info *buf_infos = malloc(sizeof(struct buf_info) * (FILE_SIZE / BUF_SIZE));
-    for (int i = 0; i < FILE_SIZE / BUF_SIZE; i++) {
+int sqpoll_read(struct io_uring *ring, char *filename) {
+    int fd = open(filename, O_RDONLY | __O_DIRECT);
+    if (fd < 0) {
+        perror("open: ");
+        return -errno;
+    }
+    struct stat stat;
+    fstat(fd, &stat);
+    size_t file_size = stat.st_size;
+    struct buf_info *buf_infos = malloc(sizeof(struct buf_info) * (file_size / BUF_SIZE));
+    for (int i = 0; i < file_size / BUF_SIZE; i++) {
         if (posix_memalign(&buf_infos[i].buf, BUF_SIZE, BUF_SIZE)) {
             perror("posix_memalign: ");
         }
         memset(buf_infos[i].buf, 0, BUF_SIZE);
         buf_infos[i].len = BUF_SIZE;
-        buf_infos[i].offset = zigzag_offset(i, FILE_SIZE);
+        buf_infos[i].offset = zigzag_offset(i, file_size);
     }
     struct io_uring_sqe *sqe;
     struct io_uring_cqe *cqe;
 
-    int fd = open(FILE_NAME, O_RDONLY | __O_DIRECT);
-    if (fd < 0) {
-        perror("open: ");
-        return -errno;
-    }
     int ret = io_uring_register_files(ring, &fd, 1);
     if (ret) {
         fprintf(stderr, "io_uring_register_files: %s\n", strerror(-ret));
         return ret;
     }
-    for (int i = 0; i < FILE_SIZE / BUF_SIZE; i++) {
+    for (int i = 0; i < file_size / BUF_SIZE; i++) {
         if (io_uring_sq_space_left(ring) == 0) {
             check_cqe(ring);
         }
@@ -86,24 +89,18 @@ int sqpoll_read(struct io_uring *ring) {
         io_uring_submit(ring);
     }
     check_cqe(ring);
-    for (int i = 0; i < FILE_SIZE / BUF_SIZE; i++) {
+    for (int i = 0; i < file_size / BUF_SIZE; i++) {
         char *buf = buf_infos[i].buf;
-        int read_completed = 0;
-        // for (int j = 0; j < BUF_SIZE; j++) {
-        //     if (buf[j] != 0) {
-        //         read_completed = 1;
-        //         break;
-        //     }
-        // }
-        // if (read_completed) {
-        //     printf("Offset %d read completed\n", buf_infos[i].offset);
-        // }
         free(buf);
     }
     free(buf_infos);
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("usage %s filename\n", argv[0]);
+        return -1;
+    }
     struct io_uring ring;
     struct io_uring_params params;
 
@@ -119,17 +116,17 @@ int main(void) {
     sched_setaffinity(getpid(), sizeof(cpuset), &cpuset);
 
     memset(&params, 0, sizeof(params));
-    params.flags |= IORING_SETUP_SQPOLL; // enable SQPOLL
-    params.flags |= IORING_SETUP_SQ_AFF; // sq_thread_cpu affinity
-    params.sq_thread_idle = 2000;        // sqpoll kthread go to idle after 2000ms
-    params.sq_thread_cpu = 1;
+    // params.flags |= IORING_SETUP_SQPOLL; // enable SQPOLL
+    // params.flags |= IORING_SETUP_SQ_AFF; // sq_thread_cpu affinity
+    // params.sq_thread_idle = 2000;        // sqpoll kthread go to idle after 2000ms
+    // params.sq_thread_cpu = 1;
 
-    int ret = io_uring_queue_init_params(32, &ring, &params);
+    int ret = io_uring_queue_init_params(8, &ring, &params);
     if (ret) {
         fprintf(stderr, "Unable to setup io_uring: %s\n", strerror(-ret));
         return -ret;
     }
-    sqpoll_read(&ring);
+    sqpoll_read(&ring, argv[1]);
     io_uring_queue_exit(&ring);
     return 0;
 }
